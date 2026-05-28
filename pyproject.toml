@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nasa-kg-augmentation"
+version = "0.1.0"
+description = "Augmentation pipeline for the NASA EOSDIS Knowledge Graph"
+requires-python = ">=3.11"
+dependencies = [
+    "neo4j>=5.15.0,<6.0",
+    "requests>=2.31.0,<3.0",
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+    "pytest-cov>=4.1.0",
+    "responses>=0.23.3",
+]
+
+[tool.setuptools.packages.find]
+include = ["augmentation*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["augmentation/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests (require Neo4j)",
+]

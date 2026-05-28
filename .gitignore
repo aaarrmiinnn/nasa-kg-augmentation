@@ -1,0 +1,16 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
+augmentation/logs/
+augmentation/data/openalex_cache/
+.env
+*.log
+htmlcov/
+.coverage
+edgraph/

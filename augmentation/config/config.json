@@ -1,0 +1,16 @@
+{
+    "database": {
+        "uri": "bolt://localhost:7687",
+        "user": "neo4j",
+        "password": "test"
+    },
+    "paths": {
+        "openalex_cache_directory": "data/openalex_cache",
+        "log_directory": "logs"
+    },
+    "openalex": {
+        "email": "",
+        "requests_per_second": 10,
+        "batch_size": 50
+    }
+}
