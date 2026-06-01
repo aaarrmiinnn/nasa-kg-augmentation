@@ -12,6 +12,20 @@ from augmentation.common.config_reader import AppConfig
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 
+HTTP_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+MAX_RETRIES = 5
+BACKOFF_BASE_SECONDS = 1.0
+
+# On-disk marker for a DOI that OpenAlex confirmed it has no work for (negative cache).
+_MISS_MARKER = {"__openalex_miss__": True}
+
+
+class _Miss:
+    """Sentinel returned by the cache for a known, confirmed miss."""
+
+
+MISS = _Miss()
+
 
 HTTP_TIMEOUT = (10, 60)  # (connect, read) seconds — avoid hanging the full run on a stalled socket
 
@@ -110,6 +124,8 @@ class OpenAlexClient:
         misses: list[str] = []
         for doi in normalized:
             cached = self._read_cache(doi)
+            if cached is MISS:
+                continue  # confirmed-not-in-OpenAlex; don't re-fetch
             if cached is not None:
                 results[doi] = cached
             else:
@@ -123,15 +139,19 @@ class OpenAlexClient:
     def _cache_path(self, normalized_doi: str) -> str:
         return os.path.join(self.cache_dir, urllib.parse.quote(normalized_doi, safe="") + ".json")
 
-    def _read_cache(self, normalized_doi: str) -> Optional[dict]:
+    def _read_cache(self, normalized_doi: str):
+        """Return the cached work dict, the ``MISS`` sentinel, or ``None`` if uncached."""
         path = self._cache_path(normalized_doi)
         if os.path.exists(path):
             try:
                 with open(path, "r") as f:
-                    return json.load(f)
+                    data = json.load(f)
             except (json.JSONDecodeError, OSError):
-                # Treat a corrupt/unreadable cache file as a miss so the run self-heals.
+                # Treat a corrupt/unreadable cache file as uncached so the run self-heals.
                 return None
+            if isinstance(data, dict) and data.get("__openalex_miss__"):
+                return MISS
+            return data
         return None
 
     def _write_cache(self, normalized_doi: str, work: dict) -> None:
@@ -148,12 +168,7 @@ class OpenAlexClient:
         if self.email:
             params["mailto"] = self.email
 
-        if self._made_request and self._min_interval:
-            self._sleep(self._min_interval)
-        self._made_request = True
-
-        resp = self.session.get(OPENALEX_WORKS_URL, params=params, timeout=HTTP_TIMEOUT)
-        resp.raise_for_status()
+        resp = self._get_with_retry(params)
 
         batch: dict[str, dict] = {}
         for w in resp.json().get("results", []):
@@ -161,4 +176,32 @@ class OpenAlexClient:
                 norm = normalize_doi(w["doi"])
                 batch[norm] = w
                 self._write_cache(norm, w)
+
+        # Negative-cache: this was a successful response, so any requested DOI that
+        # didn't come back is confirmed absent from OpenAlex — record it so future
+        # runs don't re-request it.
+        for doi in normalized_dois:
+            if doi not in batch:
+                self._write_cache(doi, _MISS_MARKER)
         return batch
+
+    def _get_with_retry(self, params: dict) -> requests.Response:
+        """GET with throttling, retrying transient errors (429/5xx/timeout) with backoff."""
+        last_exc: Optional[Exception] = None
+        for attempt in range(MAX_RETRIES):
+            if self._made_request and self._min_interval:
+                self._sleep(self._min_interval)
+            self._made_request = True
+            try:
+                resp = self.session.get(OPENALEX_WORKS_URL, params=params, timeout=HTTP_TIMEOUT)
+                resp.raise_for_status()
+                return resp
+            except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                retryable = isinstance(e, (requests.Timeout, requests.ConnectionError)) or status in HTTP_RETRY_STATUSES
+                if not retryable or attempt == MAX_RETRIES - 1:
+                    raise
+                last_exc = e
+                self._sleep(BACKOFF_BASE_SECONDS * (2 ** attempt))  # exponential backoff
+        # Unreachable: the loop above always returns or raises. Guard against a None raise.
+        raise last_exc or RuntimeError(f"Exhausted {MAX_RETRIES} retries without a stored exception")
