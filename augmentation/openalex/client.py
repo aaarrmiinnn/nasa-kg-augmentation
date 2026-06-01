@@ -1,4 +1,5 @@
 """Client for the OpenAlex API, used to augment the NASA KG with authorship data."""
+import hashlib
 import json
 import os
 import time
@@ -136,8 +137,16 @@ class OpenAlexClient:
             results.update(self._fetch_batch(chunk))
         return results
 
+    # Filesystem filename limit is ~255 bytes. Most DOIs quote to a short, readable name;
+    # the rare malformed DOI (e.g. a publication whose doi field is a 2KB concatenated dump)
+    # would blow past the limit, so fall back to a fixed-length hash for those only.
+    _MAX_CACHE_NAME = 200
+
     def _cache_path(self, normalized_doi: str) -> str:
-        return os.path.join(self.cache_dir, urllib.parse.quote(normalized_doi, safe="") + ".json")
+        name = urllib.parse.quote(normalized_doi, safe="")
+        if len(name) > self._MAX_CACHE_NAME:
+            name = hashlib.sha256(normalized_doi.encode("utf-8")).hexdigest()
+        return os.path.join(self.cache_dir, name + ".json")
 
     def _read_cache(self, normalized_doi: str):
         """Return the cached work dict, the ``MISS`` sentinel, or ``None`` if uncached."""
@@ -155,9 +164,13 @@ class OpenAlexClient:
         return None
 
     def _write_cache(self, normalized_doi: str, work: dict) -> None:
-        os.makedirs(self.cache_dir, exist_ok=True)
-        with open(self._cache_path(normalized_doi), "w") as f:
-            json.dump(work, f)
+        # Caching is an optimization — never let a cache-write error abort ingestion.
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            with open(self._cache_path(normalized_doi), "w") as f:
+                json.dump(work, f)
+        except OSError:
+            pass
 
     def _fetch_batch(self, normalized_dois: list[str]) -> dict[str, dict]:
         params = {
