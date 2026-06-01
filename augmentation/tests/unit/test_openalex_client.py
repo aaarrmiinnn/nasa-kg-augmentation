@@ -193,3 +193,22 @@ def test_parse_authorships_extracts_authors_and_institutions():
 def test_parse_authorships_empty_when_no_authorships():
     assert parse_authorships({}) == []
     assert parse_authorships({"authorships": []}) == []
+
+
+@responses.activate
+def test_raises_on_http_error(tmp_path):
+    import requests
+    responses.add(responses.GET, WORKS_URL, status=500)
+    client = OpenAlexClient(make_config(tmp_path))
+    with pytest.raises(requests.HTTPError):
+        client.fetch_works_by_dois(["10.1/x"])
+
+
+@responses.activate
+def test_result_without_doi_is_skipped(tmp_path):
+    responses.add(responses.GET, WORKS_URL,
+                  json={"results": [{"id": "https://openalex.org/W1"}, work("10.1/has")],
+                        "meta": {"count": 2}}, status=200)
+    client = OpenAlexClient(make_config(tmp_path))
+    result = client.fetch_works_by_dois(["10.1/has", "10.1/nodoi"])
+    assert set(result.keys()) == {"10.1/has"}  # the doi-less result is dropped, no crash

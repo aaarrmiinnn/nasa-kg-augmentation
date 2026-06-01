@@ -13,17 +13,20 @@ from augmentation.common.config_reader import AppConfig
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 
 
+HTTP_TIMEOUT = (10, 60)  # (connect, read) seconds — avoid hanging the full run on a stalled socket
+
+
 @dataclass
 class AuthorRef:
-    openalex_id: str
-    display_name: str
+    openalex_id: Optional[str]
+    display_name: Optional[str]
     orcid: Optional[str]
 
 
 @dataclass
 class InstitutionRef:
-    openalex_id: str
-    display_name: str
+    openalex_id: Optional[str]
+    display_name: Optional[str]
     ror: Optional[str]
     country_code: Optional[str]
 
@@ -73,6 +76,8 @@ def normalize_doi(doi: str) -> str:
     The graph stores DOIs uppercase (e.g. ``10.1111/GCB.15824``) while OpenAlex
     returns lowercase ``https://doi.org/...`` URLs. Both collapse to the same key here.
     """
+    if not doi:
+        return ""
     doi = doi.strip().lower()
     for prefix in ("https://doi.org/", "http://doi.org/", "doi.org/"):
         if doi.startswith(prefix):
@@ -118,11 +123,15 @@ class OpenAlexClient:
     def _cache_path(self, normalized_doi: str) -> str:
         return os.path.join(self.cache_dir, urllib.parse.quote(normalized_doi, safe="") + ".json")
 
-    def _read_cache(self, normalized_doi: str) -> dict | None:
+    def _read_cache(self, normalized_doi: str) -> Optional[dict]:
         path = self._cache_path(normalized_doi)
         if os.path.exists(path):
-            with open(path, "r") as f:
-                return json.load(f)
+            try:
+                with open(path, "r") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                # Treat a corrupt/unreadable cache file as a miss so the run self-heals.
+                return None
         return None
 
     def _write_cache(self, normalized_doi: str, work: dict) -> None:
@@ -143,7 +152,7 @@ class OpenAlexClient:
             self._sleep(self._min_interval)
         self._made_request = True
 
-        resp = self.session.get(OPENALEX_WORKS_URL, params=params)
+        resp = self.session.get(OPENALEX_WORKS_URL, params=params, timeout=HTTP_TIMEOUT)
         resp.raise_for_status()
 
         batch: dict[str, dict] = {}
