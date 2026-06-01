@@ -2,7 +2,7 @@
     "database": {
         "uri": "bolt://localhost:7687",
         "user": "neo4j",
-        "password": "test"
+        "password": "testpassword"
     },
     "paths": {
         "openalex_cache_directory": "data/openalex_cache",

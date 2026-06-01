@@ -9,6 +9,8 @@ build/
 .eggs/
 augmentation/logs/
 augmentation/data/openalex_cache/
+# Local-only data: the 316MB HF graph export, HF download cache, and OpenAlex response cache
+data/
 .env
 *.log
 htmlcov/
