@@ -3,7 +3,7 @@ import pytest
 import responses
 
 from augmentation.common.config_reader import AppConfig, DatabaseConfig, PathsConfig, OpenAlexConfig
-from augmentation.openalex.client import OpenAlexClient, normalize_doi, parse_authorships
+from augmentation.openalex.client import BACKOFF_BASE_SECONDS, OpenAlexClient, normalize_doi, parse_authorships
 
 
 def make_config(tmp_path) -> AppConfig:
@@ -196,10 +196,53 @@ def test_parse_authorships_empty_when_no_authorships():
 
 
 @responses.activate
-def test_raises_on_http_error(tmp_path):
+def test_unmatched_doi_is_negative_cached_and_not_refetched(tmp_path):
+    # A 200 response that omits a requested DOI -> that DOI is a known miss and
+    # must not be requested again on a later run.
+    register_works([work("10.1/known")])
+    config = make_config(tmp_path)
+
+    first = OpenAlexClient(config).fetch_works_by_dois(["10.1/known", "10.9/missing"])
+    assert set(first.keys()) == {"10.1/known"}
+    assert len(responses.calls) == 1
+
+    # New client, same cache dir: both DOIs are now cached (one hit, one miss) -> no HTTP.
+    second = OpenAlexClient(config).fetch_works_by_dois(["10.1/known", "10.9/missing"])
+    assert set(second.keys()) == {"10.1/known"}
+    assert len(responses.calls) == 1  # unchanged — the miss was not re-fetched
+
+
+@responses.activate
+def test_retries_on_server_error_then_succeeds(tmp_path):
+    responses.add(responses.GET, WORKS_URL, status=503)            # 1st attempt fails
+    register_works([work("10.1/x")])                                # 2nd attempt succeeds
+    config = make_config(tmp_path)
+    slept: list[float] = []
+    client = OpenAlexClient(config, sleep=slept.append)
+
+    result = client.fetch_works_by_dois(["10.1/x"])
+
+    assert set(result.keys()) == {"10.1/x"}
+    assert len(responses.calls) == 2          # retried once
+    assert max(slept) >= BACKOFF_BASE_SECONDS  # a real backoff sleep fired
+
+
+@responses.activate
+def test_does_not_retry_non_retryable_error(tmp_path):
     import requests
-    responses.add(responses.GET, WORKS_URL, status=500)
-    client = OpenAlexClient(make_config(tmp_path))
+    responses.add(responses.GET, WORKS_URL, status=404)  # 404 is not retryable
+    client = OpenAlexClient(make_config(tmp_path), sleep=lambda s: None)
+    with pytest.raises(requests.HTTPError):
+        client.fetch_works_by_dois(["10.1/x"])
+    assert len(responses.calls) == 1  # raised immediately, not retried
+
+
+@responses.activate
+def test_raises_after_exhausting_retries(tmp_path):
+    import requests
+    for _ in range(10):
+        responses.add(responses.GET, WORKS_URL, status=500)
+    client = OpenAlexClient(make_config(tmp_path), sleep=lambda s: None)
     with pytest.raises(requests.HTTPError):
         client.fetch_works_by_dois(["10.1/x"])
 

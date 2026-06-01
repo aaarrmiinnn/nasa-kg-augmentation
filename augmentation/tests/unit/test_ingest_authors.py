@@ -102,7 +102,7 @@ def test_process_publications_joins_uppercase_doi_to_lowercase_work(monkeypatch,
     stats = ingestor.process_publications(batch_size=10)
 
     assert client.calls == [["10.1/abc"]]  # uppercase normalized to lowercase before the API call
-    assert stats == {"publications": 1, "matched": 1, "rows": 1}
+    assert stats == {"publications": 1, "matched": 1, "rows": 1, "failed_batches": 0}
     assert captured == [[{
         "pubId": "pub-1",
         "authorId": generate_uuid_from_id("https://openalex.org/A1"),
@@ -121,5 +121,5 @@ def test_process_publications_skips_unmatched_publication(monkeypatch, tmp_path)
 
     stats = ingestor.process_publications(batch_size=10)
 
-    assert stats == {"publications": 1, "matched": 0, "rows": 0}
+    assert stats == {"publications": 1, "matched": 0, "rows": 0, "failed_batches": 0}
     assert captured == []  # nothing written
