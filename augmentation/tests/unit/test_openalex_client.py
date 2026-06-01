@@ -228,6 +228,23 @@ def test_retries_on_server_error_then_succeeds(tmp_path):
 
 
 @responses.activate
+def test_pathologically_long_doi_does_not_crash_cache(tmp_path):
+    # A base-graph publication had a 2KB malformed DOI; quoting it overflowed the
+    # filesystem filename limit and aborted the whole run. The cache must absorb it.
+    register_works([work("10.1/ok")])
+    long_doi = "10.1/" + "x/" * 1500  # ~3KB -> quoted name far exceeds 255 bytes
+    client = OpenAlexClient(make_config(tmp_path))
+
+    result = client.fetch_works_by_dois(["10.1/OK", long_doi])  # must not raise
+
+    assert "10.1/ok" in result
+    # the long DOI was an unmatched miss -> negative-cached under a hashed, short name
+    import os as _os
+    names = _os.listdir(client.cache_dir)
+    assert all(len(n) <= 255 for n in names)
+
+
+@responses.activate
 def test_does_not_retry_non_retryable_error(tmp_path):
     import requests
     responses.add(responses.GET, WORKS_URL, status=404)  # 404 is not retryable
