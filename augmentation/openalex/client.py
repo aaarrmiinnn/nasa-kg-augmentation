@@ -113,6 +113,7 @@ class OpenAlexClient:
         self._min_interval = 1.0 / rps if rps and rps > 0 else 0.0
         self._sleep = sleep
         self._made_request = False
+        self.rate_limit_remaining: Optional[int] = None  # updated from x-ratelimit-remaining headers
         self.session = requests.Session()
 
     def fetch_works_by_dois(self, dois: list[str]) -> dict[str, dict]:
@@ -198,7 +199,69 @@ class OpenAlexClient:
                 self._write_cache(doi, _MISS_MARKER)
         return batch
 
-    def _get_with_retry(self, params: dict) -> requests.Response:
+    def fetch_work_by_doi(self, doi: str, select: Optional[str] = None) -> Optional[dict]:
+        """Resolve a single work via the ``/works/doi:`` endpoint.
+
+        Required for NASA dataset DOIs: their works are retrievable here but are NOT in
+        OpenAlex's searchable filter index, so ``fetch_works_by_dois`` can't find them.
+        Returns the work dict, or None if OpenAlex has no work for the DOI (negative-cached).
+
+        Note: the cache key (``bydoi:<norm>``) does NOT encode ``select`` — the first call's
+        field selection is what gets cached. All current callers pass the same ``select``;
+        a future caller needing different fields should bypass or extend this cache.
+        """
+        norm = normalize_doi(doi)
+        if not norm:
+            return None
+        key = "bydoi:" + norm
+        cached = self._read_cache(key)
+        if cached is MISS:
+            return None
+        if cached is not None:
+            return cached
+
+        url = OPENALEX_WORKS_URL + "/doi:" + urllib.parse.quote(norm)
+        params = {}
+        if select:
+            params["select"] = select
+        if self.email:
+            params["mailto"] = self.email
+        try:
+            resp = self._get_with_retry(params, url=url)
+        except requests.HTTPError as e:
+            if getattr(getattr(e, "response", None), "status_code", None) == 404:
+                self._write_cache(key, _MISS_MARKER)  # OpenAlex has no such work
+                return None
+            raise
+        work = resp.json()
+        self._write_cache(key, work)
+        return work
+
+    def fetch_citing_works(self, work_id: str,
+                           select: str = "id,doi,title,publication_year") -> list[dict]:
+        """Return all works that cite ``work_id`` (filter=cites:), cursor-paginated and cached."""
+        wid = work_id.rsplit("/", 1)[-1]  # accept a full URL or a bare W-id
+        key = "cites:" + wid
+        cached = self._read_cache(key)
+        if cached is not None and cached is not MISS:
+            return cached
+
+        results: list[dict] = []
+        cursor: Optional[str] = "*"
+        while cursor:
+            params = {"filter": f"cites:{wid}", "per-page": 200, "cursor": cursor, "select": select}
+            if self.email:
+                params["mailto"] = self.email
+            data = self._get_with_retry(params).json()
+            page = data.get("results", [])
+            results.extend(page)
+            cursor = data.get("meta", {}).get("next_cursor")
+            if not page:
+                break  # safety: never loop on an empty page
+        self._write_cache(key, results)
+        return results
+
+    def _get_with_retry(self, params: dict, url: str = OPENALEX_WORKS_URL) -> requests.Response:
         """GET with throttling, retrying transient errors (429/5xx/timeout) with backoff."""
         last_exc: Optional[Exception] = None
         for attempt in range(MAX_RETRIES):
@@ -206,7 +269,13 @@ class OpenAlexClient:
                 self._sleep(self._min_interval)
             self._made_request = True
             try:
-                resp = self.session.get(OPENALEX_WORKS_URL, params=params, timeout=HTTP_TIMEOUT)
+                resp = self.session.get(url, params=params, timeout=HTTP_TIMEOUT)
+                remaining = resp.headers.get("x-ratelimit-remaining")
+                if remaining is not None:
+                    try:
+                        self.rate_limit_remaining = int(remaining)
+                    except ValueError:
+                        pass
                 resp.raise_for_status()
                 return resp
             except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
