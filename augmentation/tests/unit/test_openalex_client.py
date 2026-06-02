@@ -244,6 +244,38 @@ def test_pathologically_long_doi_does_not_crash_cache(tmp_path):
     assert all(len(n) <= 255 for n in names)
 
 
+WORK_BY_DOI_URL = "https://api.openalex.org/works/doi:10.5067/x"
+
+
+@responses.activate
+def test_fetch_work_by_doi_uses_per_doi_endpoint_and_caches(tmp_path):
+    # Dataset works aren't in the filter index, so we resolve via /works/doi:.
+    responses.add(responses.GET, WORK_BY_DOI_URL,
+                  json={"id": "https://openalex.org/W6948555731", "doi": "https://doi.org/10.5067/x",
+                        "cited_by_count": 12, "title": "A dataset"}, status=200)
+    client = OpenAlexClient(make_config(tmp_path))
+
+    w = client.fetch_work_by_doi("10.5067/X")  # uppercase input -> lowercased path
+    assert w["id"] == "https://openalex.org/W6948555731"
+    assert w["cited_by_count"] == 12
+    assert len(responses.calls) == 1
+
+    again = client.fetch_work_by_doi("10.5067/x")  # cached -> no new HTTP
+    assert again["cited_by_count"] == 12
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_fetch_work_by_doi_returns_none_and_negative_caches_on_404(tmp_path):
+    responses.add(responses.GET, WORK_BY_DOI_URL, status=404)
+    client = OpenAlexClient(make_config(tmp_path), sleep=lambda s: None)
+
+    assert client.fetch_work_by_doi("10.5067/x") is None
+    assert len(responses.calls) == 1
+    assert client.fetch_work_by_doi("10.5067/x") is None  # negative-cached, not refetched
+    assert len(responses.calls) == 1
+
+
 @responses.activate
 def test_does_not_retry_non_retryable_error(tmp_path):
     import requests
@@ -262,6 +294,45 @@ def test_raises_after_exhausting_retries(tmp_path):
     client = OpenAlexClient(make_config(tmp_path), sleep=lambda s: None)
     with pytest.raises(requests.HTTPError):
         client.fetch_works_by_dois(["10.1/x"])
+
+
+@responses.activate
+def test_fetch_citing_works_paginates_via_cursor(tmp_path):
+    responses.add(responses.GET, WORKS_URL,
+                  json={"results": [{"id": "https://openalex.org/W1", "doi": "https://doi.org/10.1/a"}],
+                        "meta": {"next_cursor": "CURSOR2"}}, status=200)
+    responses.add(responses.GET, WORKS_URL,
+                  json={"results": [{"id": "https://openalex.org/W2", "doi": "https://doi.org/10.1/b"}],
+                        "meta": {"next_cursor": None}}, status=200)
+    client = OpenAlexClient(make_config(tmp_path))
+
+    citers = client.fetch_citing_works("https://openalex.org/W6892326505")
+    assert [c["id"] for c in citers] == ["https://openalex.org/W1", "https://openalex.org/W2"]
+    assert len(responses.calls) == 2  # two pages
+    assert "filter=cites%3AW6892326505" in responses.calls[0].request.url or "cites:W6892326505" in responses.calls[0].request.url
+
+    cached = client.fetch_citing_works("https://openalex.org/W6892326505")  # cached -> no HTTP
+    assert len(cached) == 2
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_fetch_citing_works_empty_is_cached(tmp_path):
+    responses.add(responses.GET, WORKS_URL, json={"results": [], "meta": {"next_cursor": None}}, status=200)
+    client = OpenAlexClient(make_config(tmp_path))
+    assert client.fetch_citing_works("https://openalex.org/W999") == []
+    assert client.fetch_citing_works("https://openalex.org/W999") == []  # cached empty, not refetched
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_rate_limit_remaining_is_surfaced(tmp_path):
+    responses.add(responses.GET, WORKS_URL, json={"results": [], "meta": {"next_cursor": None}}, status=200,
+                  headers={"x-ratelimit-remaining": "42"})
+    client = OpenAlexClient(make_config(tmp_path))
+    assert client.rate_limit_remaining is None
+    client.fetch_citing_works("https://openalex.org/W1")
+    assert client.rate_limit_remaining == 42
 
 
 @responses.activate
