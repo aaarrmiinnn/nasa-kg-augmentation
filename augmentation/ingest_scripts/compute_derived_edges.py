@@ -33,6 +33,28 @@ RETURN d1, d2, w
 """
 CO_USED_WITH_INNER = "MERGE (d1)-[r:CO_USED_WITH]->(d2) SET r.weight = w, r.derived = true"
 
+# (Author)-[:WORKS_WITH_DATASET]->(Dataset): an author authored a publication that uses the dataset.
+# weight = number of distinct such publications. Directed actor->resource, so no canonicalization.
+WORKS_WITH_DATASET_AUTHOR_OUTER = """
+MATCH (a:Author)<-[:AUTHORED_BY]-(p:Publication)-[:USES_DATASET]->(d:Dataset)
+WHERE ($scope IS NULL OR d.globalId IN $scope)
+WITH a, d, count(DISTINCT p) AS w
+WHERE w >= $minWeight
+RETURN a, d, w
+"""
+WORKS_WITH_DATASET_AUTHOR_INNER = "MERGE (a)-[r:WORKS_WITH_DATASET]->(d) SET r.weight = w, r.derived = true"
+
+# (Institution)-[:WORKS_WITH_DATASET]->(Dataset): an affiliated author works with the dataset.
+# Same edge type as the author case (identical semantics; endpoint label disambiguates).
+WORKS_WITH_DATASET_INST_OUTER = """
+MATCH (i:Institution)<-[:AFFILIATED_WITH]-(:Author)<-[:AUTHORED_BY]-(p:Publication)-[:USES_DATASET]->(d:Dataset)
+WHERE ($scope IS NULL OR d.globalId IN $scope)
+WITH i, d, count(DISTINCT p) AS w
+WHERE w >= $minWeight
+RETURN i, d, w
+"""
+WORKS_WITH_DATASET_INST_INNER = "MERGE (i)-[r:WORKS_WITH_DATASET]->(d) SET r.weight = w, r.derived = true"
+
 
 class DerivedEdgeBuilder:
     """Builds/refreshes derived edges. Each method is idempotent and recomputes from the live graph."""
@@ -80,9 +102,39 @@ class DerivedEdgeBuilder:
         self.logger.info(f"CO_USED_WITH stats: {stats}")
         return stats
 
+    def compute_works_with_dataset(self, min_weight: int = 1, rebuild: bool = False,
+                                   dataset_global_ids: Optional[list[str]] = None) -> dict[str, Any]:
+        """(Author|Institution)-[:WORKS_WITH_DATASET]->(Dataset). Scope by dataset for tests."""
+        scope = dataset_global_ids
+
+        if rebuild:
+            self._iterate(
+                "MATCH ()-[r:WORKS_WITH_DATASET]->(d:Dataset) "
+                "WHERE ($scope IS NULL OR d.globalId IN $scope) RETURN r",
+                "DELETE r", {"scope": scope},
+            )
+
+        author = self._iterate(WORKS_WITH_DATASET_AUTHOR_OUTER, WORKS_WITH_DATASET_AUTHOR_INNER,
+                               {"scope": scope, "minWeight": min_weight})
+        inst = self._iterate(WORKS_WITH_DATASET_INST_OUTER, WORKS_WITH_DATASET_INST_INNER,
+                             {"scope": scope, "minWeight": min_weight})
+        for label, res in (("author", author), ("institution", inst)):
+            if res["errors"]:
+                self.logger.error(f"WORKS_WITH_DATASET ({label}) errors: {res['errors']}")
+        with self.driver.session() as session:
+            total_edges = session.run(
+                "MATCH ()-[r:WORKS_WITH_DATASET]->(:Dataset) RETURN count(r) AS c").single()["c"]
+        stats = {"author_pairs_written": author["total"], "institution_pairs_written": inst["total"],
+                 "works_with_dataset_total": total_edges}
+        self.logger.info(f"WORKS_WITH_DATASET stats: {stats}")
+        return stats
+
     def build_all(self, min_weight: int = 1, rebuild: bool = False) -> dict[str, Any]:
         """Run every derived-edge computation. Called as the final stage of the augmentation build."""
-        return {"co_used_with": self.compute_co_used_with(min_weight=min_weight, rebuild=rebuild)}
+        return {
+            "co_used_with": self.compute_co_used_with(min_weight=min_weight, rebuild=rebuild),
+            "works_with_dataset": self.compute_works_with_dataset(min_weight=min_weight, rebuild=rebuild),
+        }
 
 
 def main() -> None:

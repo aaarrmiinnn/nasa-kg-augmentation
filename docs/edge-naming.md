@@ -37,8 +37,8 @@ This project distinguishes two layers of relationships:
 
 | Edge | Direction | Meaning | Status |
 |---|---|---|---|
-| `CO_USED_WITH` | Dataset – Dataset (symmetric) | datasets co-used in the same publications (`weight`) | building |
+| `CO_USED_WITH` | Dataset – Dataset (symmetric) | datasets co-used in the same publications (`weight`) | **done** |
+| `WORKS_WITH_DATASET` | Author → Dataset, Institution → Dataset | derived data usage (`weight`) | **done** |
 | `CO_AUTHORED_WITH` | Author – Author (symmetric) | collaboration (`weight`) | planned |
 | `CO_CITED_WITH` | Publication – Publication (symmetric) | co-citation similarity (`weight`) | planned |
-| `WORKS_WITH_DATASET` | Author → Dataset, Institution → Dataset | derived data usage | planned |
 | `RESEARCHES` | Author → ScienceKeyword, Institution → ScienceKeyword | derived expertise/focus | planned |
