@@ -13,6 +13,7 @@ import sys
 
 from augmentation.common.neo4j_driver import get_driver
 from augmentation.ingest_scripts import run_augmentation
+from augmentation.ingest_scripts.compute_derived_edges import DerivedEdgeBuilder
 from augmentation.ingest_scripts.crawl_citations import CitationCrawler
 
 LOCK_PATH = "/tmp/nasakg_daily_crawl.lock"
@@ -76,6 +77,11 @@ def main() -> int:
                 print(f"daily_crawl: crawl complete but low quota ({remaining}); deferring augmentation to next run.")
         else:
             print("daily_crawl: crawl not yet complete; will resume on the next run.")
+
+        # Final stage: (re)build derived edges from the current graph. Pure in-DB, no API quota,
+        # idempotent — keeps derived edges fresh as the graph grows.
+        print("daily_crawl: refreshing derived edges...")
+        print(f"daily_crawl: derived edges -> {DerivedEdgeBuilder().build_all()}")
         return 0
     finally:
         try:
