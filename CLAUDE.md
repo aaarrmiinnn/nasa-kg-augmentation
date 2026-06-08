@@ -46,6 +46,17 @@ All ingest scripts live in `edgraph/src/graph_ingest/ingest_scripts/` and follow
 
 All nodes use `globalId` (UUID5) as the primary key. UUIDs generated from DOI or shortName.
 
+#### Augmentation additions (v2.0.0)
+
+The augmentation (this outer repo, `augmentation/`) adds, on top of the base schema above:
+
+- **2 node types**: `Author` (globalId, name, openalexId, orcid), `Institution` (globalId, name, openalexId, ror, country). globalId is UUID5 of the OpenAlex id.
+- **4 relationship types**: `AUTHORED_BY` (Publication to Author, with `authorPosition`), `AFFILIATED_WITH` (Author to Institution), `CO_USED_WITH` (Dataset to Dataset, derived), `WORKS_WITH_DATASET` (Author or Institution to Dataset, derived).
+- **Citation crawl** grows `Publication`, `USES_DATASET`, and `CITES`. Crawl-discovered publications carry `source: "citation-crawl"` and `crawlHop` (1 or 2); resume uses a `citersFetched` flag on Datasets and Publications.
+- **Derived edges** carry `derived: true` and a `weight`. Naming convention: `docs/edge-naming.md`.
+
+Pipeline scripts live in `augmentation/ingest_scripts/` (ingest_authors, ingest_institutions, run_augmentation, crawl_citations, compute_derived_edges, daily_crawl) plus the OpenAlex client in `augmentation/openalex/`. `daily_crawl.py` is the automated, resumable driver. See `README.md` for the run order. The published v2.0.0 graph is roughly 1.4M nodes and 5.8M relationships.
+
 ## Commands
 
 ### Build & Run (Docker)
